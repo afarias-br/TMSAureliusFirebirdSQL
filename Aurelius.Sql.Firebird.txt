@@ -24,6 +24,12 @@ uses
 
 (..)
 
+function TFirebirdSQLGenerator.GenerateSelect(Command: TSelectCommand): string;
+begin
+  OptimizeLeftJoins(Command);
+  Result := inherited GenerateSelect(Command);
+end;
+
 procedure TFirebirdSQLGenerator.OptimizeLeftJoins(Command: TSelectCommand);
 type
   TNodeList = TDictionary<string, TNodeInfo>;
