@@ -1,0 +1,146 @@
+(*
+
+  Additions to unit Aurelius.Sql.Firebird
+
+*)
+
+type
+  TFirebirdSQLGenerator = class(TAnsiSQLGenerator)
+  (..)
+  protected
+    function GenerateJoin(Join: TSQLJoin): string; override;
+    function GenerateSelect(Command: TSelectCommand): string; override;
+    procedure OptimizeLeftJoins(Command: TSelectCommand); virtual;
+  (..)
+
+implementation
+
+uses
+  (..)
+  Generics.Collections, 
+  Aurelius.Sql.JoinIterator;
+
+{ TFirebirdSQLGenerator }
+
+(..)
+
+procedure TFirebirdSQLGenerator.OptimizeLeftJoins(Command: TSelectCommand);
+type
+  TNodeList = TDictionary<string, TNodeInfo>;
+
+var
+  Stmt: string;
+  Where: TObjectList<TSQLWhereField>;
+  Nodes: TNodeList;
+begin
+  if (Command.From is TSQLTable)
+    or ((Command.WhereFields.Count=0) and (Command.WhereStatement='')) then
+  begin
+    Exit;
+  end;
+
+  Where := Command.WhereFields;
+  if Command.WhereStatement<>'' then
+    Stmt := ' ' + StringReplace(Command.WhereStatement, sLineBreak, ' ', [rfReplaceAll]);
+  Stmt := StringReplace(Stmt, '(', '( ', [rfReplaceAll]);
+
+  Nodes := TNodeList.Create;
+
+  with TJoinIterator.Create(TSQLJoin(Command.From)) do
+  try
+    ForEachDo(procedure (AJoin: TSQLJoin; ALeft, ARight: TSQLTable)
+      var
+        JType: TJoinType;
+        Field: TSQLWhereField;
+        Node: TNodeInfo;
+      begin
+        if AJoin=nil then
+          Exit;
+
+        JType := TJoinType.Left;
+        if Pos(Format(' %s.', [ARight.Alias]), Stmt)>0 then
+          JType := TJoinType.Inner;
+        if (JType=TJoinType.Left) and (Where.Count>0) then
+        begin
+          for Field in Where do
+          begin
+            if Field.Table.Alias=ARight.Alias then
+            begin
+              JType := TJoinType.Inner;
+              Break;
+            end;
+          end;
+        end;
+
+        if (JType=TJoinType.Inner) then
+        begin
+          AJoin.JoinType := JType;
+          {** NOTE:
+              when a LEFT join is optimized to INNER join
+              the change should be replicated all the way up
+          **}
+          Node.Left := ALeft;
+          while Nodes.TryGetValue(Node.Left.Alias, Node) do
+            Node.Join.JoinType := JType;
+        end;
+
+        Node.Join := AJoin;
+        Node.Left := ALeft;
+        Nodes.Add(ARight.Alias, Node);
+
+      end);
+  finally
+    Free;
+    Nodes.Free;
+  end;
+end;
+
+function TFirebirdSQLGenerator.GenerateJoin(Join: TSQLJoin): string;
+var
+  Stmt: string;
+begin
+  with TJoinIterator.Create(Join) do
+  try
+    ForEachDo(procedure (AJoin: TSQLJoin; ALeft, ARight: TSQLTable)
+      var
+        JoinOperator, Condition, RightSide: string;
+        J: Integer;
+      begin
+        if AJoin<>nil then
+        begin
+          RightSide := GenerateRelation(ARight);
+          case AJoin.JoinType of
+            TJoinType.Inner: JoinOperator := ' INNER JOIN ';
+            TJoinType.Left:  JoinOperator := ' LEFT JOIN ';
+          end;
+
+          Condition := '';
+          for J := 0 to AJoin.Segments.Count - 1 do
+          begin
+            if Condition <> '' then
+              Condition := Condition + ' AND ';
+            Condition := Condition +
+              AJoin.Segments[J].PKField.Table.Alias + '.' +
+              IdName(AJoin.Segments[J].PKField.Field) + ' = ' +
+              AJoin.Segments[J].FKField.Table.Alias + '.' +
+              IdName(AJoin.Segments[J].FKField.Field);
+          end;
+
+          for J := 0 to AJoin.CustomSegments.Count - 1 do
+          begin
+            if Condition <> '' then
+              Condition := Condition + ' AND ';
+            Condition := Condition + '(' + AJoin.CustomSegments[J].Condition + ')';
+          end;
+
+          Stmt := Stmt + JoinOperator + RightSide + ' ON (' + Condition + ')' + sLineBreak;
+        end else
+          Stmt := GenerateRelation(ALeft) + sLineBreak;
+      end);
+  finally
+    Free;
+  end;
+  Result := Stmt;
+end;
+
+(..)
