@@ -3,22 +3,24 @@ unit Aurelius.Sql.JoinIterator;
 interface
 
 uses
-  System.SysUtils,
+  SysUtils,
   Aurelius.Sql.BaseTypes;
 
 type
-  TNodeInfo = record
+  TJoinNode = record
     Join: TSQLJoin;
-    Left: TSQLTable;
+    RightTable: TSQLTable;
+    LeftTable: TSQLTable;
+    constructor Init(AJoin: TSQLJoin);
   end;
 
-  TNodeHandler = reference to procedure (AJoin: TSQLJoin; ALeft, ARight: TSQLTable);
+  TNodeHandler = reference to procedure (ANode: TJoinNode);
 
   TJoinIterator = class
   private
-    FJoin: TSQLJoin;
+    FRoot: TSQLJoin;
   public
-    constructor Create(AJoin: TSQLJoin);
+    constructor Create(ARoot: TSQLJoin);
     procedure ForEachDo(AHandler: TNodeHandler);
   end;
 
@@ -28,15 +30,27 @@ uses
   Generics.Collections;
 
 type
-  TNodeStack = TStack<TNodeInfo>;
+  TNodeStack = TStack<TJoinNode>;
 
-function FindLeftTable(AJoin: TSQLJoin; AStack: TNodeStack): TSQLTable;
+{ TJoinIterator }
+
+constructor TJoinIterator.Create(ARoot: TSQLJoin);
+begin
+  inherited Create;
+  if ARoot=nil then
+    raise Exception.Create('Join is required');
+  FRoot := ARoot;
+end;
+
+procedure TJoinIterator.ForEachDo(AHandler: TNodeHandler);
+
+function FindJoinedTable(AJoin: TSQLJoin; AStack: TNodeStack): TSQLTable;
 var
-  Node: TNodeInfo;
+  Node: TJoinNode;
   C, I: Integer;
 begin
   C := AStack.Count;
-  Node.Join := AJoin;
+  Node.Init(AJoin);
   repeat
     AStack.Push(Node);
     if Node.Join.LeftRelation is TSQLTable then
@@ -47,43 +61,41 @@ begin
       Node.Join := TSQLJoin(Node.Join.LeftRelation);
   until False;
   for I := Pred(AStack.Count) downto C do
-    AStack.List[I].Left := Result;
+    AStack.List[I].LeftTable := Result;
 end;
 
-{ TJoinIterator }
-
-constructor TJoinIterator.Create(AJoin: TSQLJoin);
-begin
-  inherited Create;
-  if AJoin=nil then
-    raise Exception.Create('Join is required');
-  FJoin := AJoin;
-end;
-
-procedure TJoinIterator.ForEachDo(AHandler: TNodeHandler);
 var
-  Node: TNodeInfo;
+  Node: TJoinNode;
   Stack: TNodeStack;
-  Table: TSQLTable;
 begin
   if not Assigned(AHandler) then
     Exit;
   Stack := TNodeStack.Create;
   try
-    Table := FindLeftTable(FJoin, Stack);
-    AHandler(nil, Table, nil);
+    Node.Init(nil);
+    Node.LeftTable := FindJoinedTable(FRoot, Stack); // the first/main table
+    AHandler(Node);
     while Stack.Count>0 do
     begin
       Node := Stack.Pop;
       if Node.Join.RightRelation is TSQLTable then
-        Table := TSQLTable(Node.Join.RightRelation)
+        Node.RightTable := TSQLTable(Node.Join.RightRelation)
       else
-        Table := FindLeftTable(TSQLJoin(Node.Join.RightRelation), Stack);
-      AHandler(Node.Join, Node.Left, Table);
+        Node.RightTable := FindJoinedTable(TSQLJoin(Node.Join.RightRelation), Stack);
+      AHandler(Node);
     end;
   finally
     Stack.Free;
   end;
+end;
+
+{ TJoinNode }
+
+constructor TJoinNode.Init(AJoin: TSQLJoin);
+begin
+  Join := AJoin;
+  LeftTable := nil;
+  RightTable := nil;
 end;
 
 end.

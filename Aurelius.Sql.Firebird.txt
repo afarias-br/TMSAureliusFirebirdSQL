@@ -32,7 +32,7 @@ end;
 
 procedure TFirebirdSQLGenerator.OptimizeLeftJoins(Command: TSelectCommand);
 type
-  TNodeList = TDictionary<string, TNodeInfo>;
+  TNodeList = TDictionary<string, TJoinNode>;
 
 var
   Stmt: string;
@@ -54,23 +54,23 @@ begin
 
   with TJoinIterator.Create(TSQLJoin(Command.From)) do
   try
-    ForEachDo(procedure (AJoin: TSQLJoin; ALeft, ARight: TSQLTable)
+    ForEachDo(procedure (ANode: TJoinNode)
       var
         JType: TJoinType;
         Field: TSQLWhereField;
-        Node: TNodeInfo;
+        Prev: TJoinNode;
       begin
-        if AJoin=nil then
+        if ANode.RightTable=nil then
           Exit;
 
         JType := TJoinType.Left;
-        if Pos(Format(' %s.', [ARight.Alias]), Stmt)>0 then
+        if Pos(Format(' %s.', [ANode.RightTable.Alias]), Stmt)>0 then
           JType := TJoinType.Inner;
         if (JType=TJoinType.Left) and (Where.Count>0) then
         begin
           for Field in Where do
           begin
-            if Field.Table.Alias=ARight.Alias then
+            if Field.Table.Alias=ANode.RightTable.Alias then
             begin
               JType := TJoinType.Inner;
               Break;
@@ -80,20 +80,17 @@ begin
 
         if (JType=TJoinType.Inner) then
         begin
-          AJoin.JoinType := JType;
+          ANode.Join.JoinType := JType;
           {** NOTE:
               when a LEFT join is optimized to INNER join
               the change should be replicated all the way up
           **}
-          Node.Left := ALeft;
-          while Nodes.TryGetValue(Node.Left.Alias, Node) do
-            Node.Join.JoinType := JType;
+          Prev := ANode;
+          while Nodes.TryGetValue(Prev.LeftTable.Alias, Prev) do
+            Prev.Join.JoinType := JType;
         end;
 
-        Node.Join := AJoin;
-        Node.Left := ALeft;
-        Nodes.Add(ARight.Alias, Node);
-
+        Nodes.Add(ANode.RightTable.Alias, ANode);
       end);
   finally
     Free;
@@ -107,41 +104,41 @@ var
 begin
   with TJoinIterator.Create(Join) do
   try
-    ForEachDo(procedure (AJoin: TSQLJoin; ALeft, ARight: TSQLTable)
+    ForEachDo(procedure (ANode: TJoinNode)
       var
         JoinOperator, Condition, RightSide: string;
         J: Integer;
       begin
-        if AJoin<>nil then
+        if ANode.RightTable<>nil then
         begin
-          RightSide := GenerateRelation(ARight);
-          case AJoin.JoinType of
+          RightSide := GenerateRelation(ANode.RightTable);
+          case ANode.Join.JoinType of
             TJoinType.Inner: JoinOperator := ' INNER JOIN ';
             TJoinType.Left:  JoinOperator := ' LEFT JOIN ';
           end;
 
           Condition := '';
-          for J := 0 to AJoin.Segments.Count - 1 do
+          for J := 0 to ANode.Join.Segments.Count - 1 do
           begin
             if Condition <> '' then
               Condition := Condition + ' AND ';
             Condition := Condition +
-              AJoin.Segments[J].PKField.Table.Alias + '.' +
-              IdName(AJoin.Segments[J].PKField.Field) + ' = ' +
-              AJoin.Segments[J].FKField.Table.Alias + '.' +
-              IdName(AJoin.Segments[J].FKField.Field);
+              ANode.Join.Segments[J].PKField.Table.Alias + '.' +
+              IdName(ANode.Join.Segments[J].PKField.Field) + ' = ' +
+              ANode.Join.Segments[J].FKField.Table.Alias + '.' +
+              IdName(ANode.Join.Segments[J].FKField.Field);
           end;
 
-          for J := 0 to AJoin.CustomSegments.Count - 1 do
+          for J := 0 to ANode.Join.CustomSegments.Count - 1 do
           begin
             if Condition <> '' then
               Condition := Condition + ' AND ';
-            Condition := Condition + '(' + AJoin.CustomSegments[J].Condition + ')';
+            Condition := Condition + '(' + ANode.Join.CustomSegments[J].Condition + ')';
           end;
 
           Stmt := Stmt + JoinOperator + RightSide + ' ON (' + Condition + ')' + sLineBreak;
         end else
-          Stmt := GenerateRelation(ALeft) + sLineBreak;
+          Stmt := GenerateRelation(ANode.LeftTable) + sLineBreak;
       end);
   finally
     Free;
